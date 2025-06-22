@@ -41,7 +41,7 @@ The input to the FNN consists of the following statistical features extracted fr
 - **System Specs:**
   - AMD Ryzen 5 5600H
   - 16 GB RAM
-  - NVIDIA GeForce RTX 2050
+  - NVIDIA GeForce GTX 1650
   - Windows 11 (64-bit)
 
 ---
