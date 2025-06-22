@@ -1,0 +1,273 @@
+84% of storage used … If you run out of space, you can't save to Drive or use Gmail. Get 30 GB of storage for ₹59.00 ₹0 for 1 month.
+% Define folders
+individualFolders = {'C:\ecg\Rahul VT', 'C:\ecg\Vibhav N', 'C:\ecg\Yash p jain', ...
+                     'C:\ecg\Adarsh', 'C:\ecg\Buvin', 'C:\ecg\Chethan', ...
+                     'C:\ecg\Niranjan', 'C:\ecg\Nischal', 'C:\ecg\Pranav'};
+blockFolders = {'C:\ecg\1st_Degree_Block', 'C:\ecg\2nd_Degree_Block', 'C:\ecg\3rd_Degree_Block'};
+
+blockTypes = {'1st_Degree_Block', '2nd_Degree_Block', '3rd_Degree_Block'};
+
+data = [];
+labels = [];
+
+% Load data from block folders
+for k = 1:length(blockFolders)
+    files = dir(fullfile(blockFolders{k}, '*.xlsx'));
+    for j = 1:length(files)
+        if startsWith(files(j).name, '~$')
+            continue;
+        end
+        filePath = fullfile(blockFolders{k}, files(j).name);
+        try
+            tableData = readtable(filePath);
+        catch
+            warning(['Error reading file: ', filePath]);
+            continue;
+        end
+        
+        if all(ismember({'Heart_Rate_bpm', 'ECG_Amplitude'}, tableData.Properties.VariableNames))
+            avgHeartRate = mean(tableData.Heart_Rate_bpm, 'omitnan');
+            medianHeartRate = median(tableData.Heart_Rate_bpm, 'omitnan');
+            amplitudeMean = mean(tableData.ECG_Amplitude, 'omitnan');
+            amplitudeStd = std(tableData.ECG_Amplitude, 'omitnan');
+            features = [avgHeartRate, medianHeartRate, amplitudeMean, amplitudeStd];
+            data = [data; features];
+            labels = [labels; {blockTypes{k}}];
+        else
+            warning(['Required columns missing in file: ', filePath]);
+        end
+    end
+end
+
+% Load data from individual folders
+for i = 1:length(individualFolders)
+    files = dir(fullfile(individualFolders{i}, '*.xlsx'));
+    for j = 1:length(files)
+        if startsWith(files(j).name, '~$')
+            continue;
+        end
+        filePath = fullfile(individualFolders{i}, files(j).name);
+        try
+            tableData = readtable(filePath);
+        catch
+            warning(['Error reading file: ', filePath]);
+            continue;
+        end
+        
+        if all(ismember({'Heart_Rate_bpm', 'ECG_Amplitude'}, tableData.Properties.VariableNames))
+            avgHeartRate = mean(tableData.Heart_Rate_bpm, 'omitnan');
+            medianHeartRate = median(tableData.Heart_Rate_bpm, 'omitnan');
+            amplitudeMean = mean(tableData.ECG_Amplitude, 'omitnan');
+            amplitudeStd = std(tableData.ECG_Amplitude, 'omitnan');
+            features = [avgHeartRate, medianHeartRate, amplitudeMean, amplitudeStd];
+            data = [data; features];
+            labels = [labels; {'Normal'}];
+        else
+            warning(['Required columns missing in file: ', filePath]);
+        end
+    end
+end
+
+% Convert labels to categorical
+labels = categorical(labels);
+
+% Get class names and the minimum number of samples across classes
+classNames = categories(labels);
+minSamples = max(countcats(labels)); 
+
+% Oversample the data to balance classes
+oversampledData = [];
+oversampledLabels = [];
+
+for className = classNames'
+    classData = data(labels == className, :);
+    numClasses = size(classData, 1);
+    
+    numReplications = ceil(minSamples / numClasses);
+    oversampledData = [oversampledData; repmat(classData, numReplications, 1)];
+    oversampledLabels = [oversampledLabels; repmat(className, numReplications * numClasses, 1)];
+end
+
+oversampledData = oversampledData(1:minSamples*length(classNames), :);
+oversampledLabels = oversampledLabels(1:minSamples*length(classNames));
+
+% Normalize data
+minData = min(oversampledData);
+maxData = max(oversampledData);
+oversampledData = (oversampledData - minData) ./ (maxData - minData);
+
+% Split data into training, validation, and testing sets
+cv = cvpartition(length(oversampledLabels), 'Holdout', 0.3);
+trainData = oversampledData(training(cv), :);
+trainLabels = oversampledLabels(training(cv));
+remainingData = oversampledData(test(cv), :);
+remainingLabels = oversampledLabels(test(cv));
+
+cv2 = cvpartition(length(remainingLabels), 'Holdout', 0.5);
+valData = remainingData(training(cv2), :);
+valLabels = remainingLabels(training(cv2));
+testData = remainingData(test(cv2), :);
+testLabels = remainingLabels(test(cv2));
+
+trainLabels = categorical(trainLabels);
+valLabels = categorical(valLabels);
+testLabels = categorical(testLabels);
+
+% Define the neural network architecture
+numFeatures = size(trainData, 2);
+numClasses = numel(categories(trainLabels));
+layers = [
+    featureInputLayer(numFeatures)
+    fullyConnectedLayer(128)
+    batchNormalizationLayer
+    reluLayer
+    dropoutLayer(0.5)
+    fullyConnectedLayer(64)
+    reluLayer
+    fullyConnectedLayer(numClasses)
+    softmaxLayer
+    classificationLayer
+];
+
+% Training options
+options = trainingOptions('adam', ...
+    'MaxEpochs', 200, ...
+    'InitialLearnRate', 0.001, ...
+    'MiniBatchSize', 32, ...
+    'ValidationData', {valData, valLabels}, ...
+    'ValidationFrequency', 30, ...
+    'Verbose', false, ...
+    'Plots', 'training-progress');
+
+% Train the neural network
+[NNModel, info] = trainNetwork(trainData, trainLabels, layers, options);
+
+% Check training info and print filtered epoch table
+if isfield(info, 'ValidationLoss') && isfield(info, 'ValidationAccuracy') && ...
+   ~isempty(info.ValidationLoss) && ~isempty(info.ValidationAccuracy)
+    
+    combinedData = [info.TrainingAccuracy(:), info.ValidationAccuracy(:), ...
+                    info.TrainingLoss(:), info.ValidationLoss(:)];
+    
+    validRows = all(~isnan(combinedData), 2);
+    filteredData = combinedData(validRows, :);
+    
+    if ~isempty(filteredData)
+        epochsTable = table(find(validRows), ...
+                            filteredData(:, 1), ...
+                            filteredData(:, 2), ...
+                            filteredData(:, 3), ...
+                            filteredData(:, 4), ...
+                            'VariableNames', {'Epoch', 'TrainingAccuracy', 'ValidationAccuracy', ...
+                                              'TrainingLoss', 'ValidationLoss'});
+    
+        disp('Filtered Epochs Table:');
+        disp(epochsTable);
+    else
+        disp('No valid epoch data available after filtering.');
+    end
+end
+
+% Test the model and print results
+predictedLabels = classify(NNModel, testData);
+confMat = confusionmat(testLabels, predictedLabels);
+
+[precision, recall, f1score] = precisionRecallF1(confMat);
+support = countcats(testLabels);
+
+classTable = table(classNames, precision, recall, f1score, support, ...
+                   'VariableNames', {'Class', 'Precision', 'Recall', 'F1_Score', 'Support'});
+disp('Classification Table:');
+disp(classTable);
+
+figure;
+confusionchart(confMat, classNames);
+title('Confusion Matrix');
+
+accuracy = sum(predictedLabels == testLabels) / length(testLabels);
+disp(['Test Accuracy: ', num2str(accuracy)]);
+
+macroAvg = mean(f1score);
+labelCounts = countcats(testLabels);
+totalSamples = sum(labelCounts);
+weightedAvg = sum(f1score .* (labelCounts / totalSamples));
+
+disp(['Macro Average F1-Score: ', num2str(macroAvg)]);
+disp(['Weighted Average F1-Score: ', num2str(weightedAvg)]);
+
+% Function to predict ECG class for a new folder
+function predictECGClass(inputFolder, NNModel, minData, maxData)
+    % Load the data from the input folder
+    files = dir(fullfile(inputFolder, '*.xlsx'));
+    if isempty(files)
+        disp('No .xlsx files found in the specified folder.');
+        return;
+    end
+    
+    % Initialize empty arrays for data
+    newData = [];
+    
+    for j = 1:length(files)
+        if startsWith(files(j).name, '~$')
+            continue;
+        end
+        filePath = fullfile(inputFolder, files(j).name);
+        try
+            tableData = readtable(filePath);
+        catch
+            warning(['Error reading file: ', filePath]);
+            continue;
+        end
+        
+        if all(ismember({'Heart_Rate_bpm', 'ECG_Amplitude'}, tableData.Properties.VariableNames))
+            avgHeartRate = mean(tableData.Heart_Rate_bpm, 'omitnan');
+            medianHeartRate = median(tableData.Heart_Rate_bpm, 'omitnan');
+            amplitudeMean = mean(tableData.ECG_Amplitude, 'omitnan');
+            amplitudeStd = std(tableData.ECG_Amplitude, 'omitnan');
+            features = [avgHeartRate, medianHeartRate, amplitudeMean, amplitudeStd];
+            newData = [newData; features];
+        else
+            warning(['Required columns missing in file: ', filePath]);
+        end
+    end
+    
+    if isempty(newData)
+        disp('No valid data found in the specified folder.');
+        return;
+    end
+    
+    % Normalize the data using the same normalization as the training data
+    newData = (newData - minData) ./ (maxData - minData);
+    
+    % Predict the class using the trained neural network model
+    predictedLabels = classify(NNModel, newData);
+    
+    % Get unique predicted labels
+    uniquePredictedLabels = unique(predictedLabels);
+    
+    % Display the predicted class (print each unique label only once)
+    disp('Predicted ECG Class:');
+    for i = 1:length(uniquePredictedLabels)
+        disp(uniquePredictedLabels(i));
+    end
+end
+
+% Example usage:
+% Replace 'C:\ecg\Adarsh' with the path to the folder containing the new ECG data
+predictECGClass('C:\ecg\Adarsh', NNModel, minData, maxData);
+
+% Helper function to calculate precision, recall, and F1-score
+function [precision, recall, f1score] = precisionRecallF1(confMat)
+    tp = diag(confMat);
+    fp = sum(confMat, 1)' - tp;
+    fn = sum(confMat, 2) - tp;
+
+    precision = tp ./ (tp + fp);
+    recall = tp ./ (tp + fn);
+    f1score = 2 * (precision .* recall) ./ (precision + recall);
+
+    precision(isnan(precision)) = 0;
+    recall(isnan(recall)) = 0;
+    f1score(isnan(f1score)) = 0;
+end 
+ 
